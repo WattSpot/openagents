@@ -4,8 +4,9 @@ import { Trans, useTranslation } from "react-i18next"
 import { Input } from "../ui/input"
 import { cn } from "../../lib/utils"
 import { formatCode } from "../../lib/pairing-code"
+import { TRIAL_ORIGIN } from "../../../shared/trial"
 
-const WORKSPACE_SITE = "https://workspace.openagents.org"
+const WORKSPACE_SITE = TRIAL_ORIGIN || "https://workspace.openagents.org"
 
 /**
  * The pairing-code field. State and the action that submits it live with the
@@ -52,6 +53,7 @@ export function PairPanel({
  */
 export function PairingCodeHowTo({ className }: { className?: string }): React.JSX.Element {
   const { t } = useTranslation()
+  if (TRIAL_ORIGIN) return <p className={cn("text-xs leading-6", className)}>Open <button type="button" className="text-primary underline" onClick={() => window.api.openExternal(WORKSPACE_SITE)}>{new URL(WORKSPACE_SITE).host}</button> and select your workspace to obtain a pairing code.</p>
   return (
     <div className={cn("text-xs leading-6 text-foreground", className)}>
       <p className="m-0 font-medium">{t("workspaces.quickConnect.howTo.title")}</p>

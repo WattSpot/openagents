@@ -619,10 +619,11 @@ export class AccountManager {
     const response = await authFetch(`${apiBase(this._deps.endpoint())}/v1/auth/config`, {
       signal: AbortSignal.timeout(10_000),
     })
-    if (response.status === 404) return false
+    if (response.status === 404 && !TRIAL_ORIGIN) return false
     if (!response.ok) throw new Error("Authentication configuration unavailable")
     const json = await response.json() as { data?: { mode?: string; oidc?: { enabled?: boolean } } }
     this._oidc = json.data?.mode === "oidc"
+    if (TRIAL_ORIGIN && !this._oidc) throw new Error("This trial requires workspace OIDC authentication")
     if (this._oidc && !json.data?.oidc?.enabled) throw new Error("OIDC is not configured on this server")
     return this._oidc
   }

@@ -14,6 +14,7 @@ import { accountError } from "@renderer/lib/account-errors"
 import { capture } from "@renderer/lib/analytics"
 import { CaptchaCancelled, useTencentCaptcha } from "@renderer/lib/tencent-captcha"
 import { registrationPasswordError } from "../../../shared/account-registration"
+import { TRIAL_ORIGIN } from "../../../shared/trial"
 
 /** Email accounts use the account service in-app; OAuth uses the browser. */
 export function WorkspaceSignIn(): React.JSX.Element {
@@ -113,6 +114,21 @@ export function WorkspaceSignIn(): React.JSX.Element {
   }
 
   const pending = busy || signingIn
+
+  if (TRIAL_ORIGIN) return (
+    <div className="flex min-h-full items-center justify-center p-8">
+      <section className="w-full max-w-sm space-y-5">
+        <h1 className="text-xl font-semibold">Sign in to your workspace</h1>
+        <p className="text-sm text-muted-foreground">{new URL(TRIAL_ORIGIN).host}</p>
+        <Button className="h-11 w-full" onClick={() => void browserSignIn()} disabled={pending}>
+          {pending ? <Spinner className="size-4" /> : <Globe className="size-4" />}
+          {pending ? 'Waiting for browser sign-in' : 'Sign in with workspace SSO'}
+        </Button>
+        <p className="text-xs text-muted-foreground">Your system browser opens for sign-in. Return here when it finishes.</p>
+        {(error || accountSignInError) && <p role="alert" className="text-sm text-destructive">{error || accountError(accountSignInError, t)}</p>}
+      </section>
+    </div>
+  )
 
   return (
     <div className="flex h-full justify-center overflow-y-auto bg-muted/50 p-8">
