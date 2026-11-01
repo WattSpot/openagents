@@ -418,8 +418,11 @@ class BaseAdapter {
   async run() {
     this._running = true;
 
-    // Announce agent to workspace
-    await this._joinWorkspace();
+    // A backend restart must not leave an unregistered agent polling forever.
+    while (this._running && !(await this._joinWorkspace())) {
+      await this._sleep(5000);
+    }
+    if (!this._running) return;
 
     // Sync workspace-managed skills into disabledModules
     try {

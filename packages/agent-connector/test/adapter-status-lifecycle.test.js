@@ -59,6 +59,28 @@ describe('_reportStatus dedupe', () => {
 });
 
 describe('_joinWorkspace', () => {
+  it('run waits for a successful join before starting polling', async () => {
+    const { a } = makeAdapter();
+    let attempts = 0;
+    let waits = 0;
+    a._joinWorkspace = async () => ++attempts > 1;
+    a._sleep = async () => { waits++; };
+    a.client.getAgents = () => { throw new Error('skip optional skill sync'); };
+    const reachedPolling = new Error('reached polling setup');
+    a._skipExistingControlEvents = async () => { throw reachedPolling; };
+    await assert.rejects(a.run(), error => error === reachedPolling);
+    assert.equal(attempts, 2);
+    assert.equal(waits, 1);
+  });
+
+  it('stopping during join retry does not start polling', async () => {
+    const { a } = makeAdapter();
+    a._joinWorkspace = async () => false;
+    a._sleep = async () => a.stop();
+    a._skipExistingControlEvents = async () => assert.fail('polling started after stop');
+    await a.run();
+    assert.equal(a._running, false);
+  });
   it('success → reports healthy (null), returns true, records session', async () => {
     const { a, calls } = makeAdapter();
     a.client.joinNetwork = async () => ({ session_id: 'sess-123' });
