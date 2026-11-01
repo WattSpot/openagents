@@ -538,6 +538,8 @@ class OIDCSessionCookieMiddleware(BaseHTTPMiddleware):
         public_auth = {
             "/v1/auth/config", "/v1/auth/oidc/login", "/v1/auth/oidc/callback",
             "/v1/auth/oidc/session", "/v1/auth/oidc/logout", "/v1/auth/desktop/exchange",
+            # These endpoints validate an opaque machine credential in the body.
+            "/v1/join", "/v1/token/resolve",
         }
         if oidc_enabled() and request.method != "OPTIONS" and request.url.path.startswith("/v1/") and request.url.path not in public_auth:
             from app.access import verify_identity_claims

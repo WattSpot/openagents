@@ -11,7 +11,7 @@ from sqlalchemy import select
 from app.access import get_or_create_user
 from app.config import config
 from app.firebase_auth import mint_workspace_session
-from app.models import DesktopHandoff
+from app.models import DesktopHandoff, Workspace, WorkspaceMember
 from app.oidc_auth import principal_from_claims
 from tests.test_oidc_auth import ISSUER, oidc_settings  # noqa: F401
 
@@ -105,3 +105,19 @@ def test_anonymous_workspace_creation_denied(client, oidc_settings):
 def test_wrong_issuer_session_denied(client, oidc_settings):
     token, _ = mint_workspace_session(principal_from_claims({"sub": "a", "email": "a@example.test"}, "https://wrong.test"))
     assert client.get("/v1/account/workspaces", headers={"Authorization": f"Bearer {token}"}).status_code == 401
+
+
+def test_machine_join_authenticates_its_body_token(client, db, oidc_settings):
+    workspace = Workspace(name="Machine trial", slug="machine-body-auth", password_hash="trial-machine-credential", require_login=True)
+    db.add(workspace)
+    db.commit()
+    rejected = client.post("/v1/join", json={"network": str(workspace.id), "agent_name": "intruder", "token": "wrong"})
+    assert rejected.status_code == 401
+    assert db.get(WorkspaceMember, (workspace.id, "intruder")) is None
+    accepted = client.post("/v1/join", json={"network": str(workspace.id), "agent_name": "analyst", "agent_type": "codex", "token": workspace.password_hash})
+    assert accepted.status_code == 200
+    assert db.get(WorkspaceMember, (workspace.id, "analyst")) is not None
+    resolved = client.post("/v1/token/resolve", json={"token": workspace.password_hash})
+    assert resolved.status_code == 200
+    assert resolved.json()["data"]["workspace_id"] == str(workspace.id)
+    assert client.post("/v1/token/resolve", json={"token": "wrong"}).status_code == 404
