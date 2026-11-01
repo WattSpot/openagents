@@ -205,7 +205,8 @@ export class AccountManager {
         const session: AccountSession = { ...sessionFrom(json.data), kind: "oidc" }
         if (!session.email || !isFresh(session)) throw new Error("SIGN_IN_EXCHANGE_REJECTED")
         this._set(session)
-        await this.prepareWorkspace()
+        try { await this.prepareWorkspace() }
+        catch (error) { this.signOut(); throw error }
       } else if (result.session?.token && result.session.email) {
         this._set({
           kind: "workspace",

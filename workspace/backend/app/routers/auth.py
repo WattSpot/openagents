@@ -324,4 +324,3 @@ async def oidc_logout(request: Request):
     )
     response.headers["Cache-Control"] = "no-store"
     return response
-
