@@ -278,6 +278,7 @@ class BaseAdapter {
     // (batching, repeat suppression, rotation). Standalone, they go to stdout.
     const sink = typeof logSink === 'function' ? logSink : null;
     this._log = (msg, level = 'info') => {
+      msg = this._redact(msg);
       if (sink) return sink(level, msg);
       const ts = new Date().toISOString();
       console.log(`${ts} ${String(level).toUpperCase()} adapter [${this.agentName}]: ${msg}`);
@@ -1792,6 +1793,7 @@ class BaseAdapter {
 
   async sendStatus(channel, content, extraMeta) {
     if (this._isMuted(channel)) return;
+    content = this._redact(content);
     try {
       await this.client.sendMessage(this.workspaceId, channel, this.token, content, {
         senderType: 'agent',
@@ -1809,6 +1811,7 @@ class BaseAdapter {
     // Skip empty thinking traces entirely.
     if (!content || !content.trim()) return;
     if (this._isMuted(channel)) return;
+    content = this._redact(content);
     try {
       await this.client.sendMessage(this.workspaceId, channel, this.token, content, {
         senderType: 'agent',

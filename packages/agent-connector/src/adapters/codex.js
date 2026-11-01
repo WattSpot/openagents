@@ -354,7 +354,7 @@ class CodexAdapter extends BaseAdapter {
     const msgChannel = msg.sessionId || this.channelName;
     const sender = msg.senderName || msg.senderType || 'user';
     const summary = content || attachments.map((a) => a.filename).join(', ');
-    this._log(`Processing message from ${sender} in ${msgChannel}: ${summary.slice(0, 80)}...`);
+    this._log(`Processing message from ${sender} in ${msgChannel}: ${this._redact(summary).slice(0, 80)}...`);
 
     await this._autoTitleChannel(msgChannel, summary);
     await this.sendStatus(msgChannel, 'thinking...');
@@ -563,9 +563,9 @@ class CodexAdapter extends BaseAdapter {
             try { await this.sendThinking(msgChannel, item.text); } catch {}
           } else if (item.type === 'command_execution') {
             hasToolUseSinceLastText = true;
-            const cmdText = (item.command || '').slice(0, 200);
+            const cmdText = this._redact(item.command || '').slice(0, 200);
             const exitCode = item.exit_code;
-            const output = (item.output || '').slice(0, 500);
+            const output = this._redact(item.output || '').slice(0, 500);
             let status = `**Running:** \`${cmdText}\``;
             if (exitCode !== undefined && exitCode !== null) {
               status += ` (exit ${exitCode})`;
@@ -619,7 +619,7 @@ class CodexAdapter extends BaseAdapter {
         if (code !== 0) {
           this._log(`Codex CLI exited with code ${code}`);
           if (stderrBuf.trim()) {
-            this._log(`stderr: ${stderrBuf.trim().slice(0, 500)}`);
+            this._log(`stderr: ${this._redact(stderrBuf).trim().slice(0, 500)}`);
           }
         }
 
