@@ -91,19 +91,19 @@ type BearerState =
   | { kind: 'no_access' }
   | { kind: 'error' };
 
-function BearerWorkspace({ workspaceId, idToken }: { workspaceId: string; idToken: string }) {
+function BearerWorkspace({ workspaceId, idToken }: { workspaceId: string; idToken: string | null }) {
   const t = useT();
   // A token this page already resolved opens the workspace straight away; the
   // lookup below still runs and only replaces it if the account says otherwise.
   const [state, setState] = useState<BearerState>(() => {
-    const known = recallWorkspaceToken(workspaceId, idToken);
+    const known = idToken ? recallWorkspaceToken(workspaceId, idToken) : null;
     return known !== null ? { kind: 'ok', token: known } : { kind: 'loading' };
   });
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    const known = recallWorkspaceToken(workspaceId, idToken);
+    const known = idToken ? recallWorkspaceToken(workspaceId, idToken) : null;
     if (known === null) setState({ kind: 'loading' });
     (async () => {
       try {
@@ -113,7 +113,7 @@ function BearerWorkspace({ workspaceId, idToken }: { workspaceId: string; idToke
         const match = wss.find((w) => w.slug === workspaceId || w.workspaceId === workspaceId);
         if (match) {
           setWorkspaceCookie(match.slug || workspaceId, match.token || '');
-          rememberWorkspaceToken(workspaceId, idToken, match.token || '');
+          if (idToken) rememberWorkspaceToken(workspaceId, idToken, match.token || '');
           if (known !== (match.token || '')) setState({ kind: 'ok', token: match.token || '' });
           return;
         }
@@ -123,7 +123,11 @@ function BearerWorkspace({ workspaceId, idToken }: { workspaceId: string; idToke
         // workspace. Probe existence so a typo'd link and a membership gap
         // get distinct, explicit error screens instead.
         const apiUrl = getApiBaseUrl();
-        const res = await fetch(`${apiUrl}/v1/workspaces/${encodeURIComponent(workspaceId)}`, { cache: 'no-store' });
+        const res = await fetch(`${apiUrl}/v1/workspaces/${encodeURIComponent(workspaceId)}`, {
+          cache: 'no-store',
+          credentials: 'include',
+          headers: idToken ? { Authorization: `Bearer ${idToken}` } : undefined,
+        });
         if (cancelled) return;
         setState(res.status === 404 ? { kind: 'not_found' } : { kind: 'no_access' });
       } catch {
@@ -139,10 +143,10 @@ function BearerWorkspace({ workspaceId, idToken }: { workspaceId: string; idToke
 
   if (state.kind === 'ok') {
     return (
-      <WorkspaceProvider workspaceId={workspaceId} token={state.token} bearerToken={idToken}>
+      <WorkspaceProvider workspaceId={workspaceId} token={state.token} bearerToken={idToken || undefined}>
         <IdentityGate>
           <LayoutProvider>
-            <CampaignMilestoneToasts idToken={idToken} />
+            {idToken && <CampaignMilestoneToasts idToken={idToken} />}
             <Wrapper />
           </LayoutProvider>
         </IdentityGate>
@@ -187,7 +191,7 @@ function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
   const t = useT();
   const searchParams = useSearchParams();
   const token = searchParams.get('token');
-  const { user, idToken, loading: authLoading, isOpenAgentsDomain, signIn } = useOpenAgentsAuth();
+  const { user, idToken, isAuthenticated, loading: authLoading, isOpenAgentsDomain, authMode, signIn } = useOpenAgentsAuth();
 
   useEffect(() => {
     if (token) {
@@ -198,19 +202,19 @@ function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
   // "Add this workspace to my account": a signed-in user who opened a shared
   // ?token= link is persisted as a member so it shows on their Membership Home.
   useEffect(() => {
-    if (token && idToken) {
+    if (token && isAuthenticated) {
       import('@/lib/account-api').then(({ joinWorkspaceSelf }) =>
         joinWorkspaceSelf(workspaceId, idToken, token),
       );
     }
-  }, [workspaceId, token, idToken]);
+  }, [workspaceId, token, idToken, isAuthenticated]);
 
   useEffect(() => {
-    if (!authLoading && isOpenAgentsDomain && (!user || !idToken)) redirectToLogin();
-  }, [authLoading, isOpenAgentsDomain, user, idToken]);
+    if (!authLoading && isOpenAgentsDomain && (!user || !isAuthenticated)) redirectToLogin(authMode);
+  }, [authLoading, isOpenAgentsDomain, user, isAuthenticated, authMode]);
 
   // Wait for the person's identity before ever configuring a token-only client.
-  if (authLoading || (isOpenAgentsDomain && (!user || !idToken))) return <WorkspaceLoadingSplash />;
+  if (authLoading || (isOpenAgentsDomain && (!user || !isAuthenticated))) return <WorkspaceLoadingSplash />;
 
   // Has workspace token in URL — use it directly
   if (token) {
@@ -232,7 +236,7 @@ function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
       return <WorkspaceLoadingSplash />;
     }
 
-    if (user && idToken) {
+    if (user && isAuthenticated) {
       // Logged in, no ?token in the URL — resolve the workspace token from the
       // account service using the user's identity, so the URL stays clean
       // (/{slug}) while realtime (SSE, which needs a token) still works.
@@ -252,7 +256,7 @@ function WorkspaceContent({ workspaceId }: { workspaceId: string }) {
             offers all supported methods — not just Google — so the label/icon
             stay method-neutral. */}
         <button
-          onClick={() => goToCentralLogin(signIn)}
+          onClick={() => goToCentralLogin(signIn, { authMode })}
           className="flex items-center gap-3 px-6 py-3 rounded-lg bg-primary text-primary-foreground font-medium hover:bg-primary/90 transition-colors"
         >
           <LogIn className="size-5" />

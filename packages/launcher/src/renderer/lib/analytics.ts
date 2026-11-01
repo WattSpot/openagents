@@ -1,10 +1,12 @@
 import posthog from "posthog-js"
+import { IS_TRIAL } from "../../shared/trial"
 
 const POSTHOG_KEY = "phc_t27xjrx9U42B54arcMwpiBgQxEFikBzXGnvzVtFEGtpf"
 
 let enabled = false
 
 export function initAnalytics(): void {
+  if (IS_TRIAL) return
   if (import.meta.env.DEV || import.meta.env.MODE === "test" || navigator.webdriver) return
   enabled = true
   posthog.init(POSTHOG_KEY, {

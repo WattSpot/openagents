@@ -9,7 +9,7 @@ import {
   type DesktopHandoff,
 } from '@/lib/desktop-handoff';
 import { useT, type MessageKey } from '@/lib/i18n';
-import { loadWorkspaceSession } from '@/lib/workspace-session';
+import { API_URL, fetchAuthConfig, loadWorkspaceSession } from '@/lib/workspace-session';
 
 /**
  * The desktop launcher's sign-in landing.
@@ -53,6 +53,40 @@ function DesktopAuth() {
       return;
     }
 
+    void (async () => {
+      try {
+        const config = await fetchAuthConfig();
+        if (config.mode === 'oidc') {
+          if (!config.oidc.enabled) throw new Error('Workspace sign-in is unavailable');
+          const challenge = params.get('code_challenge');
+          if (!challenge || !/^[A-Za-z0-9_-]{43}$/.test(challenge) || params.get('code_challenge_method') !== 'S256') {
+            throw new Error('Invalid desktop sign-in challenge');
+          }
+          const response = await fetch(`${API_URL}/v1/auth/desktop/handoff`, {
+            method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code_challenge: challenge, code_challenge_method: 'S256' }),
+          });
+          if (response.status === 401) {
+            if (params.get(RETRY_FLAG)) throw new Error('Please restart desktop sign-in');
+            const target = new URL(window.location.href);
+            target.searchParams.set(RETRY_FLAG, '1');
+            window.location.replace(`${API_URL}/v1/auth/oidc/login?return_to=${encodeURIComponent(target.href)}`);
+            return;
+          }
+          const json = await response.json();
+          if (!response.ok || !json.data?.code) throw new Error('Desktop sign-in was rejected');
+          await forwardToDesktop(handoff, { code: json.data.code });
+          setPhase('done');
+          return;
+        }
+        legacySignIn(handoff);
+      } catch (e) {
+        setPhase('failed');
+        setError(e instanceof Error ? { text: e.message } : { key: 'auth.desktopUnreachable' });
+      }
+    })();
+
+    function legacySignIn(handoff: DesktopHandoff) {
     const session = loadWorkspaceSession();
     if (!session) {
       if (params.get(RETRY_FLAG)) {
@@ -80,6 +114,7 @@ function DesktopAuth() {
         setError(e instanceof Error ? { text: e.message } : { key: 'auth.desktopUnreachable' });
       }
     })();
+    }
   }, []);
 
   return (

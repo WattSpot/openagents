@@ -1,10 +1,20 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import { capture, identify } from './analytics';
 import { desktopHost } from './desktop-host';
 import { workspaceApi } from './api';
-import { clearWorkspaceSession, loadWorkspaceSession } from './workspace-session';
+import {
+  API_URL,
+  clearWorkspaceSession,
+  endOidcSession,
+  fetchAuthConfig,
+  fetchOidcSession,
+  loadWorkspaceSession,
+  type AuthMode,
+  type PublicAuthConfig,
+} from './workspace-session';
 
 interface OpenAgentsUser {
   email: string;
@@ -16,7 +26,10 @@ interface OpenAgentsAuthContextValue {
   user: OpenAgentsUser | null;
   idToken: string | null;
   loading: boolean;
+  isAuthenticated: boolean;
   isOpenAgentsDomain: boolean;
+  authMode: AuthMode;
+  providerName: string;
   signIn: () => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -25,14 +38,9 @@ interface OpenAgentsAuthContextValue {
 // openagents://workspace/, so that is this app's own host there — the same way
 // workspace.openagents.org is on the web. Without it the desktop app would
 // decide it was a third-party deployment and show the marketing landing page.
-//
-// NEXT_PUBLIC_FIRST_PARTY_HOSTNAMES (comma-separated, build-time) adds more —
-// a preview or staging deployment on its own domain is still *our* app and
-// must get the login gate, not the third-party landing page.
 const OPENAGENTS_HOSTNAMES = [
   'workspace.openagents.org', 'workspace-preview.openagents.org', 'localhost', 'workspace',
-  ...(process.env.NEXT_PUBLIC_FIRST_PARTY_HOSTNAMES || '')
-    .split(',').map((h) => h.trim()).filter(Boolean),
+  ...(process.env.NEXT_PUBLIC_FIRST_PARTY_HOSTNAMES || '').split(',').map((host) => host.trim()).filter(Boolean),
 ];
 
 const OpenAgentsAuthContext = createContext<OpenAgentsAuthContextValue | null>(null);
@@ -48,106 +56,137 @@ export function OpenAgentsAuthProvider({ children }: { children: React.ReactNode
   const [idToken, setIdToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [isOpenAgentsDomain, setIsOpenAgentsDomain] = useState(false);
+  const [authMode, setAuthMode] = useState<AuthMode>('workspace_token');
+  const [providerName, setProviderName] = useState('Company SSO');
 
   useEffect(() => {
-    const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
-    const isDomain = OPENAGENTS_HOSTNAMES.includes(hostname);
-    setIsOpenAgentsDomain(isDomain);
-
-    if (!isDomain) {
-      setLoading(false);
-      return;
-    }
-
-    // A workspace-issued session (the Google-free path, see lib/workspace-session)
-    // is authoritative on its own: restore it immediately, without waiting on
-    // — or being overridden by — Firebase, which may be unreachable.
-    const stored = loadWorkspaceSession();
-    if (stored) {
-      setUser({
-        email: stored.email,
-        displayName: stored.displayName || stored.email,
-        photoURL: null,
-      });
-      setIdToken(stored.token);
-      identify(stored.email, { email: stored.email, display_name: stored.displayName || stored.email });
-      setLoading(false);
-      return;
-    }
-
-    if (desktopHost()) { setLoading(false); return; }
-
-    // Dynamically import firebase to avoid loading it on non-openagents domains
+    let cancelled = false;
     let unsubscribe: (() => void) | undefined;
-
-    // Firebase's initial auth-state resolution needs Google; where that is
-    // blocked, onAuthStateChanged never fires. Resolve to "signed out" after a
-    // short wait so the gate offers the sign-in button instead of spinning
-    // forever. The real listener still wins whenever it fires first.
-    let settled = false;
-    const settle = () => {
-      if (settled) return;
-      settled = true;
-      setLoading(false);
-    };
-    const fallbackTimer = setTimeout(settle, 5000);
-
-    // Wake from sleep: the SDK's hourly refresh timer does not run while the
-    // machine sleeps, so ask for the token on return — the SDK refreshes it if
-    // it expired, and onIdTokenChange below then propagates the new one.
+    let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
     let onVisible: (() => void) | undefined;
+    const initialize = async () => {
+      const hostname = typeof window !== 'undefined' ? window.location.hostname : '';
+      const isDomain = OPENAGENTS_HOSTNAMES.includes(hostname);
+      setIsOpenAgentsDomain(isDomain);
 
-    import('./firebase').then(({ onIdTokenChange, getFreshIdToken, getResolvedEmail }) => {
-      workspaceApi.setBearerRefresher(async () => {
-        const fresh = await getFreshIdToken(true);
-        if (fresh) setIdToken(fresh);
-        return fresh;
-      });
-      onVisible = () => {
-        if (document.visibilityState === 'visible') void getFreshIdToken().catch(() => null);
-      };
-      document.addEventListener('visibilitychange', onVisible);
+      let config: PublicAuthConfig | null = null;
+      try {
+        config = await fetchAuthConfig();
+      } catch {
+        config = null;
+      }
+      if (cancelled) return;
+      const mode = config?.mode || (process.env.NEXT_PUBLIC_AUTH_MODE === 'oidc' ? 'oidc' : isDomain ? 'firebase' : 'workspace_token');
+      setAuthMode(mode);
+      setProviderName(config?.oidc?.providerName || 'Company SSO');
 
-      // onIdTokenChange (not onAuthChange): it also fires on the SDK's hourly
-      // token refresh. The token used to be captured once at sign-in and went
-      // stale after an hour, which v1.1 turned into "rejected by guard" on
-      // every send.
-      unsubscribe = onIdTokenChange(async (firebaseUser) => {
-        if (firebaseUser) {
-          const token = await firebaseUser.getIdToken();
-          // Email/password users arrive via a custom token whose email lives in
-          // a custom claim, not firebaseUser.email — resolve both.
-          const email = firebaseUser.email || (await getResolvedEmail());
-          setUser({
-            email,
-            displayName: firebaseUser.displayName || email,
-            photoURL: firebaseUser.photoURL,
-          });
-          setIdToken(token);
-          // Email is the cross-surface person key: identify on every auth
-          // restore so handoff logins (openagents.org → /auth/callback) are
-          // attributed to the same person as their website activity. identify()
-          // is idempotent; the sign_in checkpoint is deduped per browser
-          // session so restores don't inflate the funnel.
-          if (email) {
-            identify(email, { email, display_name: firebaseUser.displayName || email });
-            if (!sessionStorage.getItem('oa_sign_in_tracked')) {
-              sessionStorage.setItem('oa_sign_in_tracked', '1');
-              const method =
-                firebaseUser.providerData[0]?.providerId?.replace('.com', '') || 'handoff';
-              capture('sign_in', { method });
-            }
+      if (mode === 'oidc') {
+        clearWorkspaceSession();
+        workspaceApi.setBearerRefresher(null);
+        setIsOpenAgentsDomain(true);
+        const restore = async () => { try {
+          const session = await fetchOidcSession();
+          if (cancelled) return;
+          if (session) {
+            const label = session.email;
+            setUser({ email: label, displayName: session.displayName || label, photoURL: null });
+            setIdToken(null);
+            identify(label, { email: label, display_name: session.displayName || label });
+          } else {
+            setUser(null);
+            setIdToken(null);
           }
-        } else {
-          setUser(null);
-          setIdToken(null);
-        }
-        settle();
-      });
-    });
+        } catch {
+          if (!cancelled) {
+            setUser(null);
+            setIdToken(null);
+          }
+        } };
+        await restore();
+        onVisible = () => { if (document.visibilityState === 'visible') void restore(); };
+        document.addEventListener('visibilitychange', onVisible);
+        if (!cancelled) setLoading(false);
+        return;
+      }
 
+      const stored = loadWorkspaceSession();
+      if (stored) {
+        setUser({ email: stored.email, displayName: stored.displayName || stored.email, photoURL: null });
+        setIdToken(stored.token);
+        identify(stored.email, { email: stored.email, display_name: stored.displayName || stored.email });
+        setLoading(false);
+        return;
+      }
+      if (desktopHost()) { setLoading(false); return; }
+
+      if (!isDomain) {
+        setLoading(false);
+        return;
+      }
+
+      // Dynamically import firebase to avoid loading it on non-openagents domains
+      // Firebase's initial auth-state resolution needs Google; where that is
+      // blocked, onAuthStateChanged never fires. Resolve to "signed out" after a
+      // short wait so the gate offers the sign-in button instead of spinning
+      // forever. The real listener still wins whenever it fires first.
+      let settled = false;
+      const settle = () => {
+        if (settled) return;
+        settled = true;
+        setLoading(false);
+      };
+      fallbackTimer = setTimeout(settle, 5000);
+
+      import('./firebase').then(({ onIdTokenChange, getFreshIdToken, getResolvedEmail }) => {
+        if (cancelled) return;
+        workspaceApi.setBearerRefresher(async () => {
+          const fresh = await getFreshIdToken(true);
+          if (fresh && !cancelled) setIdToken(fresh);
+          return fresh;
+        });
+        onVisible = () => {
+          if (document.visibilityState === 'visible') void getFreshIdToken().catch(() => null);
+        };
+        document.addEventListener('visibilitychange', onVisible);
+        unsubscribe = onIdTokenChange(async (firebaseUser) => {
+          if (firebaseUser) {
+            const token = await firebaseUser.getIdToken();
+            // Email/password users arrive via a custom token whose email lives in
+            // a custom claim, not firebaseUser.email — resolve both.
+            const email = firebaseUser.email || (await getResolvedEmail());
+            setUser({
+              email,
+              displayName: firebaseUser.displayName || email,
+              photoURL: firebaseUser.photoURL,
+            });
+            setIdToken(token);
+            // Email is the cross-surface person key: identify on every auth
+            // restore so handoff logins (openagents.org → /auth/callback) are
+            // attributed to the same person as their website activity. identify()
+            // is idempotent; the sign_in checkpoint is deduped per browser
+            // session so restores don't inflate the funnel.
+            if (email) {
+              identify(email, { email, display_name: firebaseUser.displayName || email });
+              if (!sessionStorage.getItem('oa_sign_in_tracked')) {
+                sessionStorage.setItem('oa_sign_in_tracked', '1');
+                const method =
+                  firebaseUser.providerData[0]?.providerId?.replace('.com', '') || 'handoff';
+                capture('sign_in', { method });
+              }
+            }
+          } else {
+            setUser(null);
+            setIdToken(null);
+          }
+          settle();
+        });
+      });
+
+    };
+    void initialize();
     return () => {
-      clearTimeout(fallbackTimer);
+      cancelled = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
       unsubscribe?.();
       if (onVisible) document.removeEventListener('visibilitychange', onVisible);
       workspaceApi.setBearerRefresher(null);
@@ -164,13 +203,15 @@ export function OpenAgentsAuthProvider({ children }: { children: React.ReactNode
   const signIn = useCallback(async () => {
     const host = desktopHost();
     if (host) { host.signIn(); return; }
+    if (authMode === 'oidc') {
+      window.location.assign(`${API_URL}/v1/auth/oidc/login?return_to=${encodeURIComponent(window.location.href)}`);
+      return;
+    }
     const { signInWithGoogle, getIdToken, getFreshIdToken, getResolvedEmail } = await import('./firebase');
     const firebaseUser = await signInWithGoogle();
     const token = await getIdToken();
     if (!token) throw new Error('Sign-in did not return an identity token');
     const email = firebaseUser.email || (await getResolvedEmail());
-    // A successful account switch supersedes a stored workspace session too.
-    // That restore path skips Firebase's listener, so install its refresher here.
     clearWorkspaceSession();
     workspaceApi.setBearerRefresher(async () => {
       const fresh = await getFreshIdToken(true);
@@ -185,9 +226,22 @@ export function OpenAgentsAuthProvider({ children }: { children: React.ReactNode
     setIdToken(token);
     // identify + sign_in are captured by the onAuthChange listener above,
     // which this popup sign-in also triggers.
-  }, []);
+  }, [authMode]);
 
   const signOut = useCallback(async () => {
+    if (authMode === 'oidc') {
+      let logoutUrl: string | null = null;
+      try {
+        logoutUrl = await endOidcSession();
+      } catch {
+        toast.error('Sign-out failed. Please try again.');
+        return;
+      }
+      setUser(null);
+      setIdToken(null);
+      if (logoutUrl) window.location.assign(logoutUrl);
+      return;
+    }
     // Drop the workspace session first so a Firebase failure (Google
     // unreachable) can't leave the user signed in.
     clearWorkspaceSession();
@@ -197,10 +251,22 @@ export function OpenAgentsAuthProvider({ children }: { children: React.ReactNode
     if (host) { host.signOut(); return; }
     const { signOutUser } = await import('./firebase');
     await signOutUser();
-  }, []);
+  }, [authMode]);
+
+  const isAuthenticated = Boolean(user && (authMode === 'oidc' || idToken));
 
   return (
-    <OpenAgentsAuthContext.Provider value={{ user, idToken, loading, isOpenAgentsDomain, signIn, signOut }}>
+    <OpenAgentsAuthContext.Provider value={{
+      user,
+      idToken,
+      isAuthenticated,
+      loading,
+      isOpenAgentsDomain,
+      authMode,
+      providerName,
+      signIn,
+      signOut,
+    }}>
       {children}
     </OpenAgentsAuthContext.Provider>
   );

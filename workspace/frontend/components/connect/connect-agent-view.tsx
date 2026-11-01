@@ -2339,7 +2339,7 @@ const WELCOME_FILM_SEEN_KEY = 'oa:welcomeFilmSeen';
 export function FirstRunOnboarding({ onDismiss }: { onDismiss?: () => void } = {}) {
   const t = useT();
   const isDesktop = desktopHost() !== null;
-  const { idToken: welcomeIdToken } = useOpenAgentsAuth();
+  const { idToken: welcomeIdToken, isAuthenticated: welcomeAuthenticated } = useOpenAgentsAuth();
   const [alt, setAlt] = useState<'local' | 'cloud' | null>(null);
   const [welcomeDone, setWelcomeDone] = useState(
     () => typeof window === 'undefined' || localStorage.getItem(WELCOME_FILM_SEEN_KEY) === '1',
@@ -2353,7 +2353,7 @@ export function FirstRunOnboarding({ onDismiss }: { onDismiss?: () => void } = {
   // Account-level check: another device may already have played the intro.
   // The film starts optimistically; if the server says "seen", end it quietly.
   useEffect(() => {
-    if (welcomeDone || !welcomeIdToken) return;
+    if (welcomeDone || !welcomeAuthenticated) return;
     let cancelled = false;
     getAccountProfile(welcomeIdToken)
       .then((p) => {
@@ -2364,16 +2364,16 @@ export function FirstRunOnboarding({ onDismiss }: { onDismiss?: () => void } = {
       .catch(() => { /* offline/legacy backend — browser flag still applies */ });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [welcomeIdToken]);
+  }, [welcomeIdToken, welcomeAuthenticated]);
 
   const finishWelcome = useCallback((skipped: boolean) => {
     try { localStorage.setItem(WELCOME_FILM_SEEN_KEY, '1'); } catch { /* private mode */ }
-    if (welcomeIdToken) {
+    if (welcomeAuthenticated) {
       updateAccountProfile(welcomeIdToken, { welcomeSeen: true }).catch(() => {});
     }
     capture(skipped ? 'welcome_film_skipped' : 'welcome_film_completed', { source: 'guided_wizard' });
     setWelcomeDone(true);
-  }, [welcomeIdToken]);
+  }, [welcomeIdToken, welcomeAuthenticated]);
 
   // Escape hatches reuse the full connect view on the right tab.
   if (alt && !isDesktop) return <ConnectAgentView initialTab={alt} />;
@@ -2513,7 +2513,7 @@ function NodeOnboardingStep({ footer, onDismiss }: { footer?: React.ReactNode; o
 function RemoteNodeOnboardingStep({ onBack, footer, requireNewNode = false }: { onBack?: () => void; footer?: React.ReactNode; requireNewNode?: boolean }) {
   const t = useT();
   const isMobile = useIsMobile();
-  const { idToken: setupIdToken } = useOpenAgentsAuth();
+  const { idToken: setupIdToken, isAuthenticated: setupAuthenticated } = useOpenAgentsAuth();
   const { workspace } = useWorkspace();
   const [pairing, setPairing] = useState<PairingCode | null>(null);
   const [connected, setConnected] = useState(false);
@@ -2526,7 +2526,7 @@ function RemoteNodeOnboardingStep({ onBack, footer, requireNewNode = false }: { 
   // pairing code will be long expired by the time they're at one. Email them
   // a link so "later, on my laptop" survives closing this tab.
   const handleEmailSetupLink = async () => {
-    if (!setupIdToken || !workspace || emailState !== 'idle') return;
+    if (!setupAuthenticated || !workspace || emailState !== 'idle') return;
     setEmailState('sending');
     try {
       const r = await sendSetupEmail(setupIdToken, workspace.slug);

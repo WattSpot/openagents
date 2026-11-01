@@ -46,7 +46,7 @@ function SettingsShell({ workspaceId, children }: { workspaceId: string; childre
   const t = useT();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const { user, idToken, loading: authLoading, isOpenAgentsDomain, signIn } = useOpenAgentsAuth();
+  const { user, idToken, isAuthenticated, loading: authLoading, isOpenAgentsDomain, authMode, signIn } = useOpenAgentsAuth();
 
   const urlToken = searchParams.get('token');
   const query = urlToken ? `?token=${encodeURIComponent(urlToken)}` : '';
@@ -59,7 +59,7 @@ function SettingsShell({ workspaceId, children }: { workspaceId: string; childre
     const fromCookie = readCookieToken(workspaceId);
     if (fromCookie) { setToken(fromCookie); return; }
     if (authLoading) return;
-    if (idToken) {
+    if (isAuthenticated) {
       let cancelled = false;
       import('@/lib/account-api')
         .then(({ listAccountWorkspaces }) => listAccountWorkspaces(idToken))
@@ -72,7 +72,7 @@ function SettingsShell({ workspaceId, children }: { workspaceId: string; childre
       return () => { cancelled = true; };
     }
     setToken('');
-  }, [urlToken, workspaceId, idToken, authLoading]);
+  }, [urlToken, workspaceId, idToken, isAuthenticated, authLoading]);
 
   // ── Load workspace + caller role once credentials are settled ──
   const credentialKey = `${workspaceId}:${idToken || ''}:${token ?? ''}`;
@@ -82,7 +82,7 @@ function SettingsShell({ workspaceId, children }: { workspaceId: string; childre
   const [error, setError] = useState<'denied' | 'load' | null>(null);
 
   useEffect(() => {
-    if (token === null || authLoading || (isOpenAgentsDomain && (!user || !idToken))) return;
+    if (token === null || authLoading || (isOpenAgentsDomain && (!user || !isAuthenticated))) return;
     workspaceApi.configure(workspaceId, token, idToken || undefined);
     let cancelled = false;
     Promise.all([workspaceApi.getWorkspace(), workspaceApi.getMe()])
@@ -111,9 +111,9 @@ function SettingsShell({ workspaceId, children }: { workspaceId: string; childre
   }, [workspaceId, workspace, me, token, refreshWorkspace, query, loadedFor, credentialKey]);
 
   useEffect(() => {
-    if (!authLoading && isOpenAgentsDomain && (!user || !idToken)) redirectToLogin();
-  }, [authLoading, isOpenAgentsDomain, user, idToken]);
-  if (authLoading || (isOpenAgentsDomain && (!user || !idToken))) return null;
+    if (!authLoading && isOpenAgentsDomain && (!user || !isAuthenticated)) redirectToLogin(authMode);
+  }, [authLoading, isOpenAgentsDomain, user, isAuthenticated, authMode]);
+  if (authLoading || (isOpenAgentsDomain && (!user || !isAuthenticated))) return null;
 
   if (error === 'denied') {
     // A signed-out visitor on the hosted domain may simply need to log in.
@@ -125,7 +125,7 @@ function SettingsShell({ workspaceId, children }: { workspaceId: string; childre
             <p className="max-w-md text-sm text-muted-foreground">{t('workspaceGate.signInBody')}</p>
           </div>
           <button
-            onClick={() => goToCentralLogin(signIn)}
+            onClick={() => goToCentralLogin(signIn, { authMode })}
             className="flex items-center gap-3 rounded-lg bg-primary px-6 py-3 font-medium text-primary-foreground transition-colors hover:bg-primary/90"
           >
             <LogIn className="size-5" />

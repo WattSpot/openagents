@@ -79,6 +79,7 @@ import {
 import { PORTABLE_NODE_DIR } from "./agents/paths"
 import { stopLeftoverDaemon } from "./agents/daemon-process"
 import { bundledCoreDir, readCoreVersion } from "./agents/runtime"
+import { IS_TRIAL } from "../shared/trial"
 import {
   markUiReached,
   reportStartupError,
@@ -364,6 +365,7 @@ function bundledCoreVersion(): string | null {
 }
 
 async function ensureCoreLibrary(): Promise<void> {
+  if (IS_TRIAL) return
   const corePkgPath = path.join(GLOBAL_MODULES, CORE_PKG, "package.json")
   let installedVersion: string | null = null
 
@@ -549,6 +551,7 @@ async function ensureCoreLibrary(): Promise<void> {
 }
 
 async function checkCoreUpdate(): Promise<void> {
+  if (IS_TRIAL) return
   const npmCmd = findNpmCommand()
   if (!npmCmd) return
   try {

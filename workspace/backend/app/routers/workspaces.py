@@ -19,9 +19,8 @@ import os
 import secrets
 import time
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel, Field
@@ -29,8 +28,17 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app import naming
+from app.access import (
+    get_or_create_user_by_email,
+    resolve_current_user,
+    resolve_user_role,
+    role_at_least,
+    verify_workspace_access,
+)
 from app.config import config
+from app.oidc_auth import oidc_enabled
 from app.database import get_db
+from app.firebase_auth import verify_identity_claims
 from app.models import (
     Channel,
     ChannelMember,
@@ -41,12 +49,6 @@ from app.models import (
     WorkspaceInvite,
     WorkspaceMember,
     WorkspaceMembership,
-)
-from app.access import (
-    get_or_create_user_by_email,
-    resolve_current_user,
-    resolve_user_role,
-    verify_workspace_access,
 )
 from app.response import ResponseCode, json_response, success_response
 from app.routers.network import _workspace_filter
@@ -242,10 +244,11 @@ def create_workspace(
     """Create a new workspace (= ONM network).
 
     When called with a verified identity bearer (the logged-in web flow), the
-    caller becomes the owner: their verified email is recorded as creator_email
-    and an owner WorkspaceMembership is created. Anonymous creation (no bearer)
-    still works for backward compatibility — creator_email falls back to the
-    request body, and ownership is reconciled the first time that user logs in.
+    caller becomes the owner and an owner WorkspaceMembership is created. A
+    verified email is recorded as creator_email when available. Anonymous
+    creation (no bearer) still works for backward compatibility — creator_email
+    falls back to the request body, and ownership is reconciled the first time
+    that user logs in.
     """
     # The creating agent's name enters router prompts verbatim — same
     # character policy as the join handler.
@@ -262,9 +265,13 @@ def create_workspace(
 
     now = datetime.now(timezone.utc)
 
-    from app.access import resolve_current_user
     owner = resolve_current_user(db, authorization)
-    creator_email = owner.email if owner else body.creator_email
+    if oidc_enabled() and owner is None:
+        return json_response(ResponseCode.UNAUTHORIZED, "OIDC sign-in required")
+    oidc_request = bool(owner and owner.oidc_issuer)
+    creator_email = body.creator_email
+    if owner:
+        creator_email = owner.email if not owner.oidc_issuer or owner.email_verified_at else None
 
     workspace = Workspace(
         slug=slug,
@@ -347,7 +354,7 @@ def create_workspace(
         "workspaceId": str(workspace.id),
         "slug": workspace.slug,
         "name": workspace.name,
-        "token": token,
+        "token": None if oidc_request else token,
         "channel": _format_channel(channel, db) if channel else None,
     })
 
@@ -542,10 +549,11 @@ def claim_workspace(
     workspace = db.execute(
         select(Workspace).where(_workspace_filter(workspace_id)).with_for_update()
     ).scalar_one_or_none()
-
     if not workspace:
         return json_response(ResponseCode.NOT_FOUND, "Workspace not found")
 
+    if user.oidc_issuer and not user.email_verified_at:
+        return json_response(ResponseCode.FORBIDDEN, "A verified email is required to claim this workspace")
     from app.services.legacy_ownership import workspace_owner_email, inherit_unowned_resources
     owner = workspace_owner_email(db, workspace)
     if owner and owner != email:
@@ -587,8 +595,7 @@ def rotate_token(
 ):
     """Rotate the workspace token. Old token immediately stops working.
 
-    Requires either the current workspace token or Firebase bearer auth
-    from the workspace owner.
+    Requires the current machine token or a legacy workspace owner identity.
     """
     workspace = db.execute(
         select(Workspace).where(_workspace_filter(workspace_id))
@@ -600,6 +607,9 @@ def rotate_token(
     if not _verify_workspace_access(workspace, x_workspace_token, authorization):
         return json_response(ResponseCode.UNAUTHORIZED, "Invalid credentials")
 
+    user = resolve_current_user(db, authorization)
+    if user is not None and user.oidc_issuer:
+        return json_response(ResponseCode.FORBIDDEN, "OIDC users cannot rotate machine credentials")
     from app.access import verify_workspace_access
     if not verify_workspace_access(workspace, x_workspace_token, authorization, db=db, min_role="admin"):
         return json_response(ResponseCode.FORBIDDEN, "Admin role required to rotate the workspace token")
@@ -2259,8 +2269,8 @@ def add_collaborator(
     added_by = None
     bearer = _extract_bearer(authorization)
     if bearer:
-        from app.firebase_auth import verify_firebase_token
-        added_by = verify_firebase_token(bearer)
+        claims = verify_identity_claims(bearer)
+        added_by = (claims or {}).get("email")
 
     # Upsert: update role if already exists
     existing = db.execute(

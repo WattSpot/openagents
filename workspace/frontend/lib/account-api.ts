@@ -16,12 +16,13 @@ export interface AccountWorkspace {
   lastActivityAt: string | null;
 }
 
-async function bearerFetch<T>(path: string, idToken: string, options: RequestInit = {}): Promise<T> {
+async function bearerFetch<T>(path: string, idToken: string | null, options: RequestInit = {}): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${idToken}`,
+      ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
       ...options.headers,
     },
   });
@@ -34,13 +35,13 @@ async function bearerFetch<T>(path: string, idToken: string, options: RequestIni
 }
 
 /** List the signed-in user's workspaces (Membership Home). */
-export function listAccountWorkspaces(idToken: string, signal?: AbortSignal): Promise<AccountWorkspace[]> {
+export function listAccountWorkspaces(idToken: string | null, signal?: AbortSignal): Promise<AccountWorkspace[]> {
   return bearerFetch<AccountWorkspace[]>('/v1/account/workspaces', idToken, { signal });
 }
 
 /** Email the caller a "finish setup on your computer" link for a workspace —
     the async bridge for phone users who can't install the launcher here. */
-export function sendSetupEmail(idToken: string, workspaceIdOrSlug: string): Promise<{ emailSent: boolean }> {
+export function sendSetupEmail(idToken: string | null, workspaceIdOrSlug: string): Promise<{ emailSent: boolean }> {
   return bearerFetch<{ emailSent: boolean }>(`/v1/workspaces/${workspaceIdOrSlug}/setup-email`, idToken, {
     method: 'POST',
     body: JSON.stringify({}),
@@ -57,13 +58,13 @@ export interface AccountProfile {
   welcomeSeen?: boolean;
 }
 
-export function getAccountProfile(idToken: string): Promise<AccountProfile> {
+export function getAccountProfile(idToken: string | null): Promise<AccountProfile> {
   return bearerFetch<AccountProfile>('/v1/account/profile', idToken);
 }
 
 /** Omitted fields are left untouched; an empty-string avatarUrl clears it. */
 export function updateAccountProfile(
-  idToken: string,
+  idToken: string | null,
   updates: { displayName?: string; avatarUrl?: string; welcomeSeen?: boolean },
 ): Promise<AccountProfile> {
   return bearerFetch<AccountProfile>('/v1/account/profile', idToken, {
@@ -81,9 +82,9 @@ export function updateAccountProfile(
  * user adds agents/threads from inside the workspace. Returns enough to open it.
  */
 export function createAccountWorkspace(
-  idToken: string,
+  idToken: string | null,
   name: string,
-): Promise<{ workspaceId: string; slug: string; name: string; token: string }> {
+): Promise<{ workspaceId: string; slug: string; name: string; token: string | null }> {
   return bearerFetch('/v1/workspaces', idToken, {
     method: 'POST',
     body: JSON.stringify({ name }),
@@ -97,14 +98,15 @@ export function createAccountWorkspace(
  */
 export async function joinWorkspaceSelf(
   workspaceId: string,
-  idToken: string,
+  idToken: string | null,
   workspaceToken: string,
 ): Promise<void> {
   try {
     await fetch(`${API_URL}/v1/workspaces/${workspaceId}/team/self`, {
       method: 'POST',
+      credentials: 'include',
       headers: {
-        Authorization: `Bearer ${idToken}`,
+        ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
         'X-Workspace-Token': workspaceToken,
       },
     });
@@ -150,7 +152,7 @@ export interface CampaignStatus {
 /** Window event carrying every fresh CampaignStatus, whoever fetched it. */
 export const CAMPAIGN_STATUS_EVENT = 'oa:campaign-status';
 
-export async function getCampaignStatus(idToken: string): Promise<CampaignStatus> {
+export async function getCampaignStatus(idToken: string | null): Promise<CampaignStatus> {
   const status = await bearerFetch<CampaignStatus>('/v1/campaign/status', idToken);
   // The milestone toasts, the credits page and the sidebar card each ask on
   // their own schedule; sharing each answer keeps them showing the same count.
@@ -161,7 +163,7 @@ export async function getCampaignStatus(idToken: string): Promise<CampaignStatus
 }
 
 /** Model ids available on the campaign gateway (proxied by the backend). */
-export function getCampaignModels(idToken: string): Promise<{ models: string[] }> {
+export function getCampaignModels(idToken: string | null): Promise<{ models: string[] }> {
   return bearerFetch<{ models: string[] }>('/v1/campaign/models', idToken);
 }
 

@@ -7,14 +7,14 @@ import { Button } from '@/components/ui/button';
 
 function Login() {
   const t = useT();
-  const { user, idToken, loading, signIn } = useOpenAgentsAuth();
+  const { isAuthenticated, loading, signIn } = useOpenAgentsAuth();
   const params = useSearchParams();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const target = params.get('returnTo') || '/';
   // Only same-origin application paths may be used as the return destination.
   const returnTo = target.startsWith('/') && !target.startsWith('//') && !target.includes('\\') && !target.startsWith('/login') ? target : '/';
-  useEffect(() => { if (!loading && user && idToken) window.location.replace(returnTo); }, [loading, user, idToken, returnTo]);
+  useEffect(() => { if (!loading && isAuthenticated) window.location.replace(returnTo); }, [loading, isAuthenticated, returnTo]);
   return <main className="flex min-h-screen flex-col items-center justify-center gap-5 bg-background p-8">
     <h1 className="text-xl font-semibold">{t('workspaceGate.signInTitle')}</h1>
     <p className="max-w-md text-center text-sm text-muted-foreground">{t('workspaceGate.signInBody')}</p>

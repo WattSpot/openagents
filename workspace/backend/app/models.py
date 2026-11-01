@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -45,6 +46,18 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 # Core event store
 # ---------------------------------------------------------------------------
+
+class DesktopHandoff(Base):
+    __tablename__ = "desktop_handoffs"
+
+    code_hash = Column(Text, primary_key=True)
+    user_id = Column(UUID(as_uuid=False), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    code_challenge = Column(Text, nullable=False)
+    expires_at = Column(BigInteger, nullable=False, index=True)
+    session_expires_at = Column(BigInteger, nullable=False)
+    auth_time = Column(BigInteger, nullable=False)
+    session_key_id = Column(Text, nullable=False)
+
 
 class EventRecord(Base):
     """
@@ -368,7 +381,7 @@ class WorkspaceCollaborator(Base):
 
 class User(Base):
     """A human end-user identity, resolved from a verified login-provider ID
-    token (Google via Firebase, or Sign in with Apple).
+    token (Google via Firebase, Sign in with Apple, or OIDC).
 
     Distinct from `WorkspaceMember` (agents, keyed by agent_name) and the legacy
     email-only `WorkspaceCollaborator` ACL. A user's access to a workspace is
@@ -382,8 +395,11 @@ class User(Base):
 
     id = Column(UUID(as_uuid=False), primary_key=True, default=_uuid, server_default=text("gen_random_uuid()"))
     email = Column(Text, nullable=False)                 # normalized lowercase
+    is_invite_placeholder = Column(Boolean, nullable=False, default=False, server_default=text("FALSE"))
     firebase_uid = Column(Text, nullable=True)           # Google/Firebase `uid` claim
     apple_sub = Column(Text, nullable=True)              # Sign in with Apple `sub` claim
+    oidc_issuer = Column(Text, nullable=True)
+    oidc_subject = Column(Text, nullable=True)
     display_name = Column(Text, nullable=True)
     # User-set profile picture: an https:// URL or a small data:image/... URL
     # (the frontend downscales uploads client-side before saving).
@@ -402,6 +418,11 @@ class User(Base):
 
     __table_args__ = (
         UniqueConstraint("email", name="uq_users_email"),
+        UniqueConstraint("oidc_issuer", "oidc_subject", name="uq_users_oidc_identity"),
+        CheckConstraint(
+            "(oidc_issuer IS NULL) = (oidc_subject IS NULL)",
+            name="ck_users_oidc_identity_pair",
+        ),
     )
 
 

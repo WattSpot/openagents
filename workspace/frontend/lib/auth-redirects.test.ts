@@ -25,6 +25,22 @@ describe('desktop account boundaries', () => {
     goToCentralLogin();
     expect(location.href).toBe('https://openagents.org/login?returnTo=https%3A%2F%2Fworkspace.openagents.org%2Fteam');
   });
+  it('uses the local OIDC flow instead of the central account site', () => {
+    const signIn = vi.fn();
+    const location = { hostname:'workspace.example.test', href:'https://workspace.example.test/team' };
+    vi.stubGlobal('window', { location });
+    goToCentralLogin(signIn, { authMode: 'oidc' });
+    expect(signIn).toHaveBeenCalledOnce();
+    expect(location.href).toBe('https://workspace.example.test/team');
+  });
+  it('does not redirect OIDC logout to the central account site', async () => {
+    const signOut = vi.fn().mockResolvedValue(undefined);
+    const location = { hostname:'workspace.example.test', href:'https://workspace.example.test/team' };
+    vi.stubGlobal('window', { location });
+    await goToCentralLogout(signOut, 'oidc');
+    expect(signOut).toHaveBeenCalledOnce();
+    expect(location.href).toBe('https://workspace.example.test/team');
+  });
 });
 
 it('redirects signed-out preview visitors to login with a return path', () => {

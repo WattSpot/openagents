@@ -65,6 +65,8 @@ export interface EmbeddedSession {
 }
 
 export interface WorkspaceHostDeps {
+  /** Cookie-authenticated OIDC deployments render their own HTTPS workspace. */
+  remoteWorkspace?: () => boolean
   getWindow: () => BrowserWindow | null
   /** The configured workspace endpoint, if any. */
   endpoint: () => string | undefined
@@ -214,7 +216,7 @@ export class WorkspaceHost {
     // hosted page is not the bundle's origin, so every This Computer action the
     // Workspace offers would fail without a word. Refuse, and let the renderer
     // say what is wrong.
-    if (!bundleExists() && app.isPackaged) {
+    if (!this._deps.remoteWorkspace?.() && !bundleExists() && app.isPackaged) {
       slog("[workspace-view] installed app has no Workspace bundle — not showing the hosted app")
       throw new Error(WORKSPACE_BUNDLE_MISSING)
     }
@@ -432,6 +434,14 @@ export class WorkspaceHost {
     return contents.getURL().startsWith(`${WORKSPACE_SCHEME}://${WORKSPACE_HOST}/`)
   }
 
+  /** Non-privileged account and notification events from our own workspace. */
+  isWorkspacePageSender(contents: Electron.WebContents): boolean {
+    if (this.isWorkspaceSender(contents)) return true
+    if (!this._deps.remoteWorkspace?.() || !this._entryFor(contents)) return false
+    try { return new URL(contents.getURL()).origin === new URL(webBase(this._deps.endpoint())).origin }
+    catch { return false }
+  }
+
   /**
    * Tear every view down and forget everything that origin stored.
    *
@@ -511,13 +521,14 @@ export class WorkspaceHost {
     if (this._home) return this._home
     const home = this._createEntry(WORKSPACE_HOME_TAB, this._bundleOr("/"))
     this._home = home
-    this._load(home, resume && !this._resumed && bundleExists() ? workspaceBundleUrl("/?desktop_resume=1") : home.baseUrl)
+    this._load(home, resume && !this._resumed && !this._deps.remoteWorkspace?.() && bundleExists() ? workspaceBundleUrl("/?desktop_resume=1") : home.baseUrl)
     this._resumed = true
     return home
   }
 
   private _createEntry(id: string, baseUrl: string): ViewEntry {
     const view = createWorkspaceView({
+      oidc: this._deps.remoteWorkspace?.(),
       endpoint: this._deps.endpoint(),
       onExternalLogin: this._deps.onExternalLogin,
     })
@@ -567,7 +578,7 @@ export class WorkspaceHost {
       // the sign-in took us, and the error page it leaves behind is a dead
       // end — no navigation, no way back, nothing on screen to explain it.
       // Returning to the bundle at least puts the user somewhere with exits.
-      if (!validatedURL.startsWith(`${WORKSPACE_SCHEME}://${WORKSPACE_HOST}/`) && bundleExists()) {
+      if (!this._deps.remoteWorkspace?.() && !validatedURL.startsWith(`${WORKSPACE_SCHEME}://${WORKSPACE_HOST}/`) && bundleExists()) {
         void contents.loadURL(entry.baseUrl).catch(() => {})
       }
     })
@@ -649,7 +660,7 @@ export class WorkspaceHost {
 
   /** A route inside the bundle, or on the hosted app when there is no bundle. */
   private _bundleOr(route: string): string {
-    return bundleExists() ? workspaceBundleUrl(route) : `${webBase(this._deps.endpoint())}${route}`
+    return !this._deps.remoteWorkspace?.() && bundleExists() ? workspaceBundleUrl(route) : `${webBase(this._deps.endpoint())}${route}`
   }
 
   /**
@@ -662,7 +673,7 @@ export class WorkspaceHost {
    */
   private _urlFor(target: string, token?: string | null, sessionId?: string | null): string {
     const route = `/${encodeURIComponent(target)}`
-    if (!bundleExists()) return `${webBase(this._deps.endpoint())}${route}`
+    if (this._deps.remoteWorkspace?.() || !bundleExists()) return `${webBase(this._deps.endpoint())}${route}`
     const query = new URLSearchParams()
     if (token) query.set("token", token)
     if (sessionId) query.set("thread", sessionId)

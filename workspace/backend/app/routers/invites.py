@@ -28,6 +28,7 @@ from app.models import (
     WorkspaceMember,
     WorkspaceMembership,
 )
+from app.oidc_auth import oidc_email_verification_required
 from app.response import ResponseCode, json_response, success_response
 
 logger = logging.getLogger(__name__)
@@ -216,6 +217,11 @@ def accept_invite(
     if user is None:
         return json_response(ResponseCode.UNAUTHORIZED, "Sign in to accept this invite")
 
+    if invite.email and user.oidc_issuer and not user.email_verified_at and oidc_email_verification_required():
+        return json_response(
+            ResponseCode.FORBIDDEN,
+            "A verified email is required to accept this invite",
+        )
     if invite.email and user.email != invite.email:
         return json_response(
             ResponseCode.FORBIDDEN,

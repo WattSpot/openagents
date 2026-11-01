@@ -1,4 +1,5 @@
-import { ipcMain, type BrowserWindow } from "electron"
+import { ipcMain, session as electronSession, type BrowserWindow } from "electron"
+import { WORKSPACE_PARTITION } from "../workspace-bundle"
 
 import {
   isThemeMode,
@@ -58,6 +59,14 @@ export function registerAccountIpc(deps: AccountIpcDeps): AccountManager {
   const seenReplies = new Set<string>()
   const account = new AccountManager({
     endpoint: deps.endpoint,
+    installOidcCookie: async (session) => {
+      const origin = webBase(deps.endpoint())
+      if (new URL(origin).protocol !== "https:") throw new Error("OIDC requires HTTPS")
+      await electronSession.fromPartition(WORKSPACE_PARTITION).cookies.set({
+        url: origin, name: "oa_oidc_session", value: session.token, path: "/",
+        secure: true, httpOnly: true, sameSite: "lax", expirationDate: session.expiresAt,
+      })
+    },
     openExternal: (url) => void openExternalSafely(url),
     onChange: (info: AccountInfo | null) => {
       if (!info) {
@@ -81,6 +90,7 @@ export function registerAccountIpc(deps: AccountIpcDeps): AccountManager {
     getWindow: deps.getWindow,
     endpoint: deps.endpoint,
     session: () => account.embeddedSession(),
+    remoteWorkspace: () => account.isOidc(),
     // Google and GitHub cannot finish in the app, so their sign-in runs in the
     // browser and comes back over loopback — the same flow the launcher used
     // before any of this was embedded.
@@ -97,6 +107,11 @@ export function registerAccountIpc(deps: AccountIpcDeps): AccountManager {
     // Main owns the tabs, so a renderer that reloads asks for them again
     // rather than losing track of pages that are still open.
     onTabsChanged: (snapshot) => deps.getWindow()?.webContents.send("workspace-tabs:changed", snapshot),
+  })
+  electronSession.fromPartition(WORKSPACE_PARTITION).cookies.on("changed", (_event, cookie, cause, removed) => {
+    if (removed && cause !== "overwrite" && cookie.name === "oa_oidc_session" && account.isOidc() && account.getAccount()) {
+      account.signOut()
+    }
   })
 
   workspaceHost = host
@@ -153,6 +168,7 @@ export function registerAccountIpc(deps: AccountIpcDeps): AccountManager {
       // is current, synchronously, and a token that lapses an hour into the
       // session would otherwise land the user on the web app's sign-in gate.
       if (account.getAccount()) await account.bearer().catch(() => null)
+      await account.prepareWorkspace()
       // A view created while the last sign-out is still wiping storage would
       // lose the session it was just given.
       await host.whenCleared()
@@ -217,12 +233,12 @@ export function registerAccountIpc(deps: AccountIpcDeps): AccountManager {
   // The page asks for a sign-in only when its session no longer works, so the
   // account behind it is ended first and the native sign-in takes over.
   ipcMain.on("workspace-view:sign-in", (event) => {
-    if (!host.isWorkspaceSender(event.sender)) return
+    if (!host.isWorkspacePageSender(event.sender)) return
     account.signOut()
     deps.getWindow()?.webContents.send("workspace:sign-in")
   })
   ipcMain.on("workspace-view:sign-out", (event) => {
-    if (host.isWorkspaceSender(event.sender)) account.signOut()
+    if (host.isWorkspacePageSender(event.sender)) account.signOut()
   })
   // A page routing somewhere that belongs to another tab. See openRoute.
   ipcMain.on("workspace-view:open-route", (event, route: unknown) => {
@@ -238,7 +254,7 @@ export function registerAccountIpc(deps: AccountIpcDeps): AccountManager {
     if (host.isWorkspaceSender(event.sender)) deps.getWindow()?.webContents.send("workspace:open-computer")
   })
   ipcMain.on("workspace-view:agent-reply", (event, value: unknown) => {
-    if (!host.isWorkspaceSender(event.sender) || !account.getAccount() || !value || typeof value !== "object") return
+    if (!host.isWorkspacePageSender(event.sender) || !account.getAccount() || !value || typeof value !== "object") return
     const input = value as Record<string, unknown>
     const fields = [input.workspaceId, input.sessionId, input.eventId, input.sender, input.content]
     if (fields.some((field) => typeof field !== "string" || !field.trim())) return

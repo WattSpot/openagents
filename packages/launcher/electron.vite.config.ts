@@ -3,11 +3,15 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const trialDefine = { __TRIAL_ORIGIN__: JSON.stringify(process.env.OPENAGENTS_TRIAL_ORIGIN || null) }
+
 export default defineConfig({
   main: {
+    define: trialDefine,
     plugins: [externalizeDepsPlugin()]
   },
   preload: {
+    define: trialDefine,
     build: {
       rollupOptions: {
         input: {
@@ -22,6 +26,7 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()]
   },
   renderer: {
+    define: trialDefine,
     resolve: {
       dedupe: ['react', 'react-dom', 'sonner', 'radix-ui'],
       alias: {

@@ -8,6 +8,7 @@ A workspace is an ONM network with workspace-specific mods loaded.
 import asyncio
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -17,8 +18,17 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError, SQLAlchemyError, TimeoutError as PoolTimeoutError
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import config
+from app.desktop_auth import router as desktop_auth_router
+from app.oidc_auth import (
+    OIDC_SESSION_COOKIE,
+    allowed_browser_origins,
+    is_allowed_browser_origin,
+    oidc_enabled,
+)
 from app.routers import web_projects, reactions, agent_services, account, agent_profile, app_version, approvals, auth, briefs, browser, campaign, pilot, cloud_agents, devices, events, feedback, fetch, files, grants, groups, integrations, invites, issues, knowledge, model_access, network, nodes, notifications, onboarding, read_state, registry, routines, search, shares, sharing, tasks, thread_access, timers, todos, watches, workflows, workspaces
 
 logging.basicConfig(level=logging.INFO)
@@ -492,17 +502,75 @@ async def database_unavailable(request: Request, exc: Exception):
     )
 
 
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=config.WORKSPACE_SESSION_SECRET or secrets.token_urlsafe(32),
+    session_cookie="oa_oidc_state",
+    max_age=600,
+    same_site="lax",
+    https_only=bool(getattr(config, "OIDC_COOKIE_SECURE", True)),
+)
+
+
+class OIDCSessionCookieMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if oidc_enabled() and request.url.path in {"/v1/auth/session", "/v1/auth/apple-session", "/v1/auth/session/renew"}:
+            return JSONResponse(status_code=401, content={"code": 401, "message": "Use the configured OIDC provider"})
+        token = request.cookies.get(OIDC_SESSION_COOKIE)
+        if oidc_enabled() and token and not request.headers.get("authorization"):
+            if request.url.path == "/v1/auth/oidc/callback":
+                return await call_next(request)
+            origin = request.headers.get("origin")
+            if request.headers.get("sec-fetch-site") == "cross-site":
+                return JSONResponse(
+                    status_code=403,
+                    content={"code": 403, "message": "Cross-site session requests are not allowed"},
+                )
+            if request.method in {"POST", "PUT", "PATCH", "DELETE"} and not is_allowed_browser_origin(origin):
+                return JSONResponse(status_code=403, content={"code": 403, "message": "Origin is not allowed"})
+            headers = [
+                (key, value)
+                for key, value in request.scope.get("headers", [])
+                if key.lower() != b"authorization"
+            ]
+            headers.append((b"authorization", f"Bearer {token}".encode()))
+            request.scope["headers"] = headers
+        public_auth = {
+            "/v1/auth/config", "/v1/auth/oidc/login", "/v1/auth/oidc/callback",
+            "/v1/auth/oidc/session", "/v1/auth/oidc/logout", "/v1/auth/desktop/exchange",
+        }
+        if oidc_enabled() and request.method != "OPTIONS" and request.url.path.startswith("/v1/") and request.url.path not in public_auth:
+            from app.access import verify_identity_claims
+            from starlette.datastructures import Headers
+            authorization = Headers(scope=request.scope).get("authorization", "")
+            bearer = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+            # Machine credentials remain scoped and validated by each endpoint.
+            if not request.headers.get("x-workspace-token") and not (bearer and verify_identity_claims(bearer)):
+                return JSONResponse(status_code=401, content={"code": 401, "message": "OIDC sign-in required"})
+        return await call_next(request)
+
+
+app.add_middleware(OIDCSessionCookieMiddleware)
+app.include_router(desktop_auth_router)
+
+
 # CORS — added FIRST so it's innermost in the stack. That way CORS
 # headers (and OPTIONS preflight handling) are applied BEFORE gzip, so
 # CORS-aware responses still work when compressed.
 origins = [o.strip() for o in config.CORS_ORIGINS.split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+if oidc_enabled():
+    origins = sorted(allowed_browser_origins())
+cors_options = {
+    "allow_credentials": True,
+    "allow_methods": ["*"],
+    "allow_headers": ["*"],
+}
+if "*" in origins:
+    cors_options["allow_origins"] = []
+    cors_options["allow_origin_regex"] = ".*"
+else:
+    cors_options["allow_origins"] = origins
+app.add_middleware(CORSMiddleware, **cors_options)
 
 # GZip — Compresses all responses above `minimum_size` bytes when the
 # client sends `Accept-Encoding: gzip`. Event polling responses are JSON

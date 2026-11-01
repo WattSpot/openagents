@@ -1,4 +1,6 @@
 import { accountApiBase, apiBase, webBase } from "./endpoints"
+import crypto from "crypto"
+import { TRIAL_ORIGIN } from "../../shared/trial"
 import { authFetch } from "./http"
 import { registrationPasswordError } from "../../shared/account-registration"
 import {
@@ -43,6 +45,8 @@ export interface AccountWorkspace {
 }
 
 export interface AccountDeps {
+  /** Installs a secure HttpOnly cookie in the workspace partition, in main only. */
+  installOidcCookie?: (session: AccountSession) => Promise<void>
   /** The configured workspace endpoint, if the user set one. */
   endpoint: () => string | undefined
   /** Hand a URL to the OS browser (web-security's openExternalSafely). */
@@ -108,6 +112,7 @@ export class AccountManager {
   private _pending: Handoff | null = null
   private _sessionTimer: ReturnType<typeof setTimeout> | null = null
   private _renewal: { session: AccountSession; promise: Promise<string> } | null = null
+  private _oidc = false
 
   constructor(private _deps: AccountDeps) {}
 
@@ -138,10 +143,11 @@ export class AccountManager {
   }
 
   private _set(session: AccountSession | null): void {
+    // Persist first: failed OS storage must never leave a half-signed-in app.
+    if (session) saveSession(session)
     this._session = session
     this._loaded = true
-    if (session) saveSession(session)
-    else clearSession()
+    if (!session) clearSession()
     this._scheduleSessionCheck()
     this._deps.onChange(session ? toAccountInfo(session) : null)
   }
@@ -160,13 +166,17 @@ export class AccountManager {
     this.cancelSignIn()
 
     const origin = webBase(this._deps.endpoint())
+    const oidc = await this._discoverOidc()
+    if (oidc && new URL(origin).protocol !== "https:") throw new Error("OIDC requires HTTPS")
     // Checked before a port is opened and a browser is launched: without the
     // landing page there is no way back into the app, and finding that out
     // after the user has signed in wastes the whole trip.
     if (!(await landingPageExists(origin))) throw new Error(BROWSER_UNAVAILABLE)
 
-    const handoff = await startHandoffServer(origin)
+    const handoff = await startHandoffServer(origin, oidc)
     this._pending = handoff
+    const verifier = crypto.randomBytes(32).toString("base64url")
+    const challenge = crypto.createHash("sha256").update(verifier).digest("base64url")
 
     // Straight to the workspace's own desktop landing page, NOT to the central
     // login: that login treats `returnTo` as where to go after minting its
@@ -176,14 +186,27 @@ export class AccountManager {
     // the login itself — and when the browser is already signed in to the
     // workspace, it skips that entirely and answers on the spot.
     this._deps.openExternal(
-      `${origin}/auth/desktop?port=${handoff.port}&state=${encodeURIComponent(handoff.state)}`,
+      `${origin}/auth/desktop?port=${handoff.port}&state=${encodeURIComponent(handoff.state)}${oidc ? `&code_challenge=${challenge}&code_challenge_method=S256` : ""}`,
     )
 
     try {
       const result = await handoff.result
       if (result.error) throw new Error(result.error)
 
-      if (result.session?.token && result.session.email) {
+      if (oidc) {
+        if (!result.code) throw new Error("SIGN_IN_EMPTY_HANDOFF")
+        const response = await authFetch(`${apiBase(this._deps.endpoint())}/v1/auth/desktop/exchange`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code: result.code, code_verifier: verifier }),
+          signal: AbortSignal.timeout(15_000),
+        })
+        const json = await response.json() as { data?: SessionPayload }
+        if (!response.ok || !json.data?.session_token) throw new Error("SIGN_IN_EXCHANGE_REJECTED")
+        const session: AccountSession = { ...sessionFrom(json.data), kind: "oidc" }
+        if (!session.email || !isFresh(session)) throw new Error("SIGN_IN_EXCHANGE_REJECTED")
+        this._set(session)
+        await this.prepareWorkspace()
+      } else if (result.session?.token && result.session.email) {
         this._set({
           kind: "workspace",
           token: result.session.token,
@@ -217,7 +240,7 @@ export class AccountManager {
     expiresAt: number
   } | null {
     this._ensureLoaded()
-    if (!this._session) return null
+    if (!this._session || this._session.kind === "oidc") return null
     const { token, email, displayName, expiresAt } = this._session
     return { token, email, displayName, expiresAt }
   }
@@ -231,6 +254,7 @@ export class AccountManager {
    * form turns that into a retry with the widget.
    */
   async captchaConfig(): Promise<CaptchaConfig> {
+    if ((this._deps.endpoint() || TRIAL_ORIGIN) && await this._discoverOidc()) return CAPTCHA_DISABLED
     const cached = this._captchaConfig
     if (cached && Date.now() - cached.at < CAPTCHA_CONFIG_TTL_MS) return cached.value
     let value = CAPTCHA_DISABLED
@@ -275,6 +299,7 @@ export class AccountManager {
     password: string,
     captcha?: CaptchaPass,
   ): Promise<AccountInfo> {
+    if ((this._deps.endpoint() || TRIAL_ORIGIN) && await this._discoverOidc()) return this.signIn()
     // A form submitted while a browser sign-in is pending replaces it: two
     // live gates would race to be the session.
     this.cancelSignIn()
@@ -297,6 +322,7 @@ export class AccountManager {
     displayName?: string,
     captcha?: CaptchaPass,
   ): Promise<AccountInfo> {
+    if ((this._deps.endpoint() || TRIAL_ORIGIN) && await this._discoverOidc()) return this.signIn()
     const normalizedEmail = email.trim().toLowerCase()
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail))
       throw new Error("SIGN_UP_INVALID_EMAIL")
@@ -514,6 +540,11 @@ export class AccountManager {
     this._ensureLoaded()
     const session = this._session
     if (!session) throw new Error("NOT_SIGNED_IN")
+    if (session.kind === "oidc") {
+      if (isFresh(session)) return session.token
+      this._set(null)
+      throw new Error("SESSION_EXPIRED")
+    }
     if (isFresh(session) && (session.kind !== "workspace" || session.expiresAt - Date.now() / 1000 > 86400)) return session.token
     if (this._renewal?.session === session) return this._renewal.promise
     const promise = this._renewSession(session)
@@ -566,6 +597,33 @@ export class AccountManager {
    */
   async listWorkspaces(): Promise<AccountWorkspace[]> {
     return this._get<AccountWorkspace[]>("/v1/account/workspaces")
+  }
+
+  isOidc(): boolean {
+    this._ensureLoaded()
+    return this._oidc || this._session?.kind === "oidc"
+  }
+
+  async prepareWorkspace(): Promise<void> {
+    this._ensureLoaded()
+    if (this._session?.kind === "oidc") {
+      await this.bearer()
+      if (!this._deps.installOidcCookie) throw new Error("OIDC cookie installer unavailable")
+      await this._deps.installOidcCookie(this._session)
+    }
+  }
+
+  private async _discoverOidc(): Promise<boolean> {
+    if (this.isOidc()) return true
+    const response = await authFetch(`${apiBase(this._deps.endpoint())}/v1/auth/config`, {
+      signal: AbortSignal.timeout(10_000),
+    })
+    if (response.status === 404) return false
+    if (!response.ok) throw new Error("Authentication configuration unavailable")
+    const json = await response.json() as { data?: { mode?: string; oidc?: { enabled?: boolean } } }
+    this._oidc = json.data?.mode === "oidc"
+    if (this._oidc && !json.data?.oidc?.enabled) throw new Error("OIDC is not configured on this server")
+    return this._oidc
   }
 
   /**

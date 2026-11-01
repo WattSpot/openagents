@@ -44,6 +44,43 @@ beforeEach(() => {
   stored = null
 })
 
+it("exchanges an OIDC code in main, installs a cookie, and never embeds the credential", async () => {
+  const origin = "https://workspace.example.test"
+  const calls: string[] = []
+  let challenge = ""
+  const installOidcCookie = vi.fn(async () => {})
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    calls.push(url)
+    if (url.endsWith("/v1/auth/config")) return { ok: true, json: async () => ({ data: { mode: "oidc", oidc: { enabled: true } } }) }
+    if (url.endsWith("/v1/auth/desktop/exchange")) {
+      const body = JSON.parse(init!.body as string)
+      const crypto = await import("crypto")
+      expect(crypto.createHash("sha256").update(body.code_verifier).digest("base64url")).toBe(challenge)
+      expect(body.code).toBe("c".repeat(43))
+      return { ok: true, json: async () => ({ data: { session_token: SESSION.token, email: SESSION.email, expires_at: new Date(SESSION.expiresAt * 1000).toISOString() } }) }
+    }
+    return { ok: true, status: 200 }
+  }))
+  const manager = new AccountManager({ endpoint: () => origin, onChange: vi.fn(), installOidcCookie,
+    openExternal: (value) => {
+      const url = new URL(value)
+      expect(url.origin).toBe(origin)
+      challenge = url.searchParams.get("code_challenge")!
+      void realFetch(`http://127.0.0.1:${url.searchParams.get("port")}/desktop-auth`, {
+        method: "POST", body: JSON.stringify({ state: url.searchParams.get("state"), code: "c".repeat(43) }),
+      })
+    },
+  })
+  expect((await manager.signIn()).email).toBe(SESSION.email)
+  expect(stored?.kind).toBe("oidc")
+  expect(manager.embeddedSession()).toBeNull()
+  expect(installOidcCookie).toHaveBeenCalledOnce()
+  expect(calls.every(url => url.startsWith(origin))).toBe(true)
+  expect(await manager.bearer()).toBe(SESSION.token)
+  expect(calls.some(url => url.endsWith("/renew"))).toBe(false)
+  manager.signOut()
+})
+
 /**
  * The real fetch, captured before anything stubs it: the stand-in browser below
  * genuinely posts to the loopback server, and must keep doing so while the

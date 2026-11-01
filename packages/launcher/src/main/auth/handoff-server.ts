@@ -29,6 +29,8 @@ const MAX_BODY_BYTES = 16 * 1024
 
 /** What the callback page hands back. */
 export interface HandoffResult {
+  /** Single-use OIDC handoff code. The session is redeemed over HTTPS by main. */
+  code?: string
   /** A workspace session JWT — the path we ask for. */
   session?: {
     token: string
@@ -62,8 +64,10 @@ export interface Handoff {
  */
 export async function startHandoffServer(
   webOrigin: string,
+  codeOnly = false,
 ): Promise<Handoff> {
   const state = crypto.randomBytes(24).toString("base64url")
+  let accepted = false
   let settle: ((r: HandoffResult) => void) | null = null
   let fail: ((e: Error) => void) | null = null
   const result = new Promise<HandoffResult>((resolve, reject) => {
@@ -98,15 +102,19 @@ export async function startHandoffServer(
     readBody(req)
       .then((body) => {
         const payload = parsePayload(req.url || "", body)
-        if (!payload || payload.state !== state) {
+        if (accepted || !payload || payload.state !== state || (codeOnly && (
+          !payload.code || !/^[A-Za-z0-9_-]{43}$/.test(payload.code) || payload.session || payload.customToken
+        ))) {
           // A wrong state is either a stale tab or something else on this
           // machine probing the port. Say nothing useful either way.
           res.writeHead(400, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ ok: false }))
           return
         }
+        accepted = true
         respondOk(req, res)
         settle?.({
+          code: payload.code,
           session: payload.session,
           customToken: payload.customToken,
           error: payload.error,
@@ -218,6 +226,7 @@ function parsePayload(url: string, body: string): Payload | null {
   const token = query.get("session_token")
   return {
     state,
+    ...(query.get("code") ? { code: query.get("code")! } : {}),
     ...(token
       ? {
           session: {

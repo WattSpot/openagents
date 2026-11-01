@@ -46,7 +46,7 @@ const THEME_OPTIONS = [
 
 export function UserMenu({ side, align = 'end' }: UserMenuProps = {}) {
   const { workspace, token } = useWorkspace();
-  const { user, isOpenAgentsDomain, signIn, signOut } = useOpenAgentsAuth();
+  const { user, isOpenAgentsDomain, authMode, signIn, signOut } = useOpenAgentsAuth();
   const me = useMe(workspace?.slug || workspace?.workspaceId);
   const isAdmin = canAdminister(me);
   const [showFeedback, setShowFeedback] = useState(false);
@@ -111,7 +111,7 @@ export function UserMenu({ side, align = 'end' }: UserMenuProps = {}) {
       confirmText: t('userMenu.signOut'),
       destructive: true,
     });
-    if (ok) goToCentralLogout(signOut);
+    if (ok) goToCentralLogout(signOut, authMode);
   };
 
   return (
@@ -230,7 +230,7 @@ export function UserMenu({ side, align = 'end' }: UserMenuProps = {}) {
                   {t('userMenu.signOut')}
                 </DropdownMenuItem>
               ) : (
-                <DropdownMenuItem onClick={() => goToCentralLogin(signIn)}>
+                <DropdownMenuItem onClick={() => goToCentralLogin(signIn, { authMode })}>
                   <LogIn />
                   {t('userMenu.signIn')}
                 </DropdownMenuItem>

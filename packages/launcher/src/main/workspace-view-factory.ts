@@ -16,6 +16,7 @@ import { slog } from "./bootstrap/startup-log"
 export const LAUNCHER_UA_TAG = "OpenAgentsLauncher"
 
 export interface WorkspaceViewOptions {
+  oidc?: boolean
   /** The configured workspace endpoint, if any. */
   endpoint: string | undefined
   /**
@@ -117,6 +118,11 @@ function hardenNavigation(contents: Electron.WebContents, options: WorkspaceView
     return { action: "deny" }
   })
   contents.on("will-navigate", (event, url) => {
+    if (options.oidc && new URL(url).pathname === "/v1/auth/oidc/login") {
+      event.preventDefault()
+      options.onExternalLogin()
+      return
+    }
     let origin: string
     try {
       origin = new URL(url).origin
@@ -137,6 +143,12 @@ function hardenNavigation(contents: Electron.WebContents, options: WorkspaceView
       return
     }
     openExternalSafely(url)
+  })
+  contents.on("will-redirect", (event, url) => {
+    if (options.oidc && new URL(url).origin !== new URL(webBase(options.endpoint)).origin) {
+      event.preventDefault()
+      options.onExternalLogin()
+    }
   })
   contents.on("will-attach-webview", (event) => event.preventDefault())
 }

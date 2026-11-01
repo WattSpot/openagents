@@ -19,7 +19,9 @@
  * here rather than reached for across the boundary.
  */
 
-export const DEFAULT_API_BASE = "https://workspace-endpoint.openagents.org"
+import { TRIAL_ORIGIN } from "../../shared/trial"
+
+export const DEFAULT_API_BASE = TRIAL_ORIGIN || "https://workspace-endpoint.openagents.org"
 
 /**
  * Where accounts are authenticated. Not derived from the workspace endpoint: a

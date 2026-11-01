@@ -30,6 +30,17 @@ async function post(
 }
 
 describe("startHandoffServer", () => {
+  it("accepts only code and state in OIDC mode", async () => {
+    const handoff = (open = await startHandoffServer(ORIGIN, true))
+    expect((await post(handoff, { state: handoff.state, session: { token: "jwt" } })).status).toBe(400)
+    expect((await post(handoff, { state: "wrong", code: "c".repeat(43) })).status).toBe(400)
+    const [, result] = await Promise.all([
+      post(handoff, { state: handoff.state, code: "c".repeat(43) }), handoff.result,
+    ])
+    expect(result.code).toBe("c".repeat(43))
+    expect(result.session).toBeUndefined()
+    expect(result.customToken).toBeUndefined()
+  })
   it("resolves with the session posted for its own state", async () => {
     const handoff = (open = await startHandoffServer(ORIGIN))
     const session = {

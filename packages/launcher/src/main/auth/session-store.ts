@@ -17,7 +17,7 @@ import { app, safeStorage } from "electron"
  *    renewed in the background (see firebase-rest.ts).
  */
 export interface AccountSession {
-  kind: "workspace" | "firebase"
+  kind: "workspace" | "firebase" | "oidc"
   token: string
   email: string
   displayName: string | null
@@ -78,7 +78,8 @@ export function loadSession(): AccountSession | null {
       )
       return JSON.parse(json) as AccountSession
     }
-    return parsed.session ?? null
+    // An OIDC credential is never accepted from an unencrypted legacy file.
+    return parsed.session?.kind === "oidc" ? null : parsed.session ?? null
   } catch (err) {
     // A session we cannot read is a session the user has to establish again —
     // never a reason to fail startup.
@@ -90,12 +91,16 @@ export function loadSession(): AccountSession | null {
 export function saveSession(session: AccountSession): void {
   const file = filePath()
   const payload: FileShape = { version: 1 }
-  if (useKeychain()) {
+  if (session.kind === "oidc" && !safeStorage.isEncryptionAvailable()) {
+    throw new Error("OS credential storage is unavailable")
+  }
+  if (session.kind === "oidc" || useKeychain()) {
     try {
       payload.encrypted = safeStorage
         .encryptString(JSON.stringify(session))
         .toString("base64")
     } catch (err) {
+      if (session.kind === "oidc") throw new Error("OS credential storage failed")
       console.error(
         "safeStorage encrypt failed; storing the session unwrapped:",
         (err as Error).message,

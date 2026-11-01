@@ -92,6 +92,7 @@ export function isDesktopReturn(returnTo: string | null): boolean {
 
 interface ForwardPayload {
   state: string;
+  code?: string;
   session?: { token: string; email: string; displayName: string | null; expiresAt: number };
   error?: string;
 }
@@ -119,6 +120,7 @@ export async function forwardToDesktop(
     if (!res.ok) throw new Error(`Launcher refused the sign-in (${res.status})`);
   } catch {
     const query = new URLSearchParams({ state: handoff.state });
+    if (payload.code) query.set('code', payload.code);
     if (payload.session) {
       query.set('session_token', payload.session.token);
       query.set('email', payload.session.email);

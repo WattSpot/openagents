@@ -1,4 +1,5 @@
 import { desktopHost } from './desktop-host';
+import { API_URL, type AuthMode } from './workspace-session';
 
 // Central auth redirects for the workspace app.
 //
@@ -26,10 +27,11 @@ function isLocalhost(): boolean {
  * session back to this workspace and returns to where they started.
  * @param fallbackSignIn used only on localhost (inline Firebase Google popup).
  */
-export function goToCentralLogin(fallbackSignIn?: () => void, options?: { forceCentral?: boolean }): void {
+export function goToCentralLogin(fallbackSignIn?: () => void, options?: { forceCentral?: boolean; authMode?: AuthMode }): void {
   if (typeof window === 'undefined') return;
   const host = desktopHost();
   if (host) { host.signIn(); return; }
+  if (options?.authMode === 'oidc') { fallbackSignIn?.(); return; }
   if (isLocalhost() && !options?.forceCentral) {
     fallbackSignIn?.();
     return;
@@ -42,19 +44,27 @@ export function goToCentralLogin(fallbackSignIn?: () => void, options?: { forceC
  * Sign out on this origin, then end the central openagents.org session too and
  * land on the stable signed-out page (no auto re-login bounce).
  */
-export async function goToCentralLogout(signOut: () => Promise<void>): Promise<void> {
+export async function goToCentralLogout(
+  signOut: () => Promise<void>,
+  authMode: AuthMode = 'firebase',
+): Promise<void> {
   try {
     await signOut();
   } catch {
     /* already signed out */
   }
+  if (authMode === 'oidc') return;
   if (typeof window === 'undefined' || isLocalhost() || desktopHost()) return;
   window.location.href = `${CENTRAL}/logout`;
 }
 
 /** Login route for protected pages; popup login must begin with a user click. */
-export function redirectToLogin(): void {
+export function redirectToLogin(authMode: AuthMode = 'firebase'): void {
   if (typeof window === 'undefined') return;
+  if (authMode === 'oidc') {
+    window.location.replace(`${API_URL}/v1/auth/oidc/login?return_to=${encodeURIComponent(window.location.href)}`);
+    return;
+  }
   if (desktopHost()) { desktopHost()?.signIn(); return; }
   if (isLocalhost() || window.location.hostname === 'workspace-preview.openagents.org') {
     const returnTo = window.location.pathname + window.location.search + window.location.hash;

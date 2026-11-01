@@ -11,6 +11,7 @@
 // must be present in the GitHub Release alongside the installers — see
 // .github/workflows/desktop-build.yml.
 import path from "path"
+import { IS_TRIAL } from "../shared/trial"
 import { app, ipcMain, type BrowserWindow } from "electron"
 import electronUpdater, {
   type UpdateInfo,
@@ -522,6 +523,11 @@ export function setupAutoUpdater(opts: {
   if (opts.resumeAfterFailedInstall)
     _resumeAfterFailedInstall = opts.resumeAfterFailedInstall
   _state.currentVersion = app.getVersion()
+  if (IS_TRIAL) {
+    emit({ supported: false, autoDownload: false, downloadUrl: "" })
+    _log("[updater] trial build: automatic updates disabled")
+    return
+  }
   _state.autoDownload = _isAutoUpdateEnabled()
 
   // Unpackaged builds get the SAME update flow as a release: electron-updater

@@ -1,6 +1,7 @@
 import type { AccountWorkspace, Workspace } from "@renderer/types"
+import { TRIAL_ORIGIN } from "../../shared/trial"
 
-const DEFAULT_WORKSPACE_WEB_BASE_URL = "https://workspace.openagents.org"
+const DEFAULT_WORKSPACE_WEB_BASE_URL = TRIAL_ORIGIN || "https://workspace.openagents.org"
 
 /** Full workspace URL, including the access token when the workspace has one. */
 export function workspaceUrl(ws: Workspace): string {
